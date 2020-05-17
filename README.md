@@ -157,16 +157,16 @@ Defaults to `["SteamUser Hash BB3 {account_name}", "SteamUser Hash FF2 {account_
 
 ### enablePicsCache
 
-If enabled, then `node-steam-user` will internally cache data about all apps and packages that it knows about.
+If enabled, then `node-steam-user` will internally cache data in memory about all apps and packages that it knows about.
 Currently, `node-steam-user` "knows about" an app/package if:
 
 - Packages
-    - You own it
+    - You own it, or
     - You request info about it via `getProductInfo`
 - Apps
-    - It's in a known package
-    - You request info about it via `getProductInfo`
-    - A friend who is online plays the app
+    - It's in a known package, or
+    - You request info about it via `getProductInfo`, or
+    - A friend who is online plays the app, or
     - You request info about an online user who is playing it via `getPersonas`
 
 This option is required in order to use several methods and events. This works when logging in anonymously.
@@ -177,9 +177,9 @@ Defaults to `false`.
 
 ### picsCacheAll
 
-If enabled, `enablePicsCache` is enabled, and `changelistUpdateInterval` is nonzero, then apps and packages which get
-updated while your bot is running will also be added to the cache. Default behavior is to only cache apps and packages
-that are "known" via the above criteria.
+If `picsCacheAll` is enabled, `enablePicsCache` is enabled, and `changelistUpdateInterval` is nonzero, then apps and
+packages which get updated while your bot is running will also be added to the cache. Default behavior is to only cache
+apps and packages that are "known" via the above criteria.
 
 Added in 3.3.0.
 
@@ -188,11 +188,12 @@ Defaults to `false`.
 ### changelistUpdateInterval
 
 If `enablePicsCache` is enabled, then `node-steam-user` will automatically request app/package changes (via
-`getProductChanges`) for known apps and packages, and update the internal cache when they update. Set to `0` to disable.
+`getProductChanges`) for known apps and packages, and update the internal cache when they update. This is the frequency,
+in milliseconds, for changelist update requests. Set to `0` to disable.
 
 Added in 3.3.0.
 
-Defaults to `60000`.
+Defaults to `60000`. Minimum value `1000`, although you're recommended to not go below 10 seconds or so.
 
 ### additionalHeaders
 
@@ -938,7 +939,8 @@ Unblocks all communication with a specified user.
 
 ### createQuickInviteLink([options,] callback)
 - `options` - Optional. An object with zero or more of these properties:
-	- `invite_limit` - How many times this link can be used before it's no longer valid. Defaults to 1.
+	- `inviteLimit` - How many times this link can be used before it's no longer valid. Defaults to 1.
+	- `inviteDuration` - How long in seconds this link can be used before it's no longer valid. Defaults to `null` (no time limit).
 - `callback` - Called when the request completes
 	- `err` - An `Error` object on failure, or `null` on success
 	- `response` - The response object
@@ -951,6 +953,8 @@ Unblocks all communication with a specified user.
 			- `valid` - `true` if the link is currently valid, or `false` if not
 
 **v4.11.0 or later is required to use this method**
+
+**v4.13.0 or later is required to use `inviteDuration`**
 
 Creates a quick-invite link that can be used by anyone who has it to add you to their friends list without needing to
 send an invite that you must to approve.

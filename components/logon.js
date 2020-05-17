@@ -47,7 +47,7 @@ SteamUser.prototype.logOn = function(details) {
 				if (typeof logonId == 'string' && logonId.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
 					logonId = StdLib.IPv4.stringToInt(logonId) ^ PRIVATE_IP_OBFUSCATION_MASK;
 				} else if (typeof logonId == 'number' && logonId > maxUint32) {
-					console.error("[steam-user] Warning: logonID " + details.logonID + " is greater than " + maxUint32 + " and has been truncated.");
+					this._warn(`logonID ${details.logonID} is greater than ${maxUint32} and has been truncated.`);
 					logonId = maxUint32;
 				}
 			}
@@ -211,8 +211,8 @@ SteamUser.prototype.logOn = function(details) {
 			this._tempSteamID = sid;
 		}
 
-		if (anonLogin && this._logOnDetails.password) {
-			process.stderr.write("[steam-user] Warning: Logging into anonymous Steam account but a password was specified... did you specify your accountName improperly?\n");
+		if (anonLogin && (this._logOnDetails.password || this._logOnDetails.login_key)) {
+			this._warn('Logging into anonymous Steam account but a password was specified... did you specify your accountName improperly?');
 		}
 
 		this._doConnection();
@@ -248,6 +248,35 @@ SteamUser.prototype._doConnection = function() {
 };
 
 /**
+ * Send the actual ClientLogOn message.
+ * @private
+ */
+SteamUser.prototype._sendLogOn = function() {
+	// Realistically, this should never need to elapse since at this point we have already established a successful connection
+	// with the CM. But sometimes, Steam appears to never respond to the logon message. Valve.
+	this._logonMsgTimeout = setTimeout(() => {
+		this.emit('debug', 'Logon message timeout elapsed. Attempting relog.');
+		this._disconnect(true);
+		this._enqueueLogonAttempt();
+	}, 5000);
+
+	this._send(this._logOnDetails.game_server_token ? SteamUser.EMsg.ClientLogonGameServer : SteamUser.EMsg.ClientLogon, this._logOnDetails);
+};
+
+/**
+ * Enqueue another logon attempt.
+ * Used after we get ServiceUnavailable, TryAnotherCM, or a timeout waiting for ClientLogOnResponse.
+ * @private
+ */
+SteamUser.prototype._enqueueLogonAttempt = function() {
+	let timer = this._logonTimeoutDuration || 1000;
+	this._logonTimeoutDuration = Math.min(timer * 2, 60000); // exponential backoff, max 1 minute
+	this._logonTimeout = setTimeout(() => {
+		this.logOn(true);
+	}, timer);
+};
+
+/**
  * Log off of Steam gracefully.
  */
 SteamUser.prototype.logOff = function() {
@@ -261,6 +290,8 @@ SteamUser.prototype.logOff = function() {
  */
 SteamUser.prototype._disconnect = function(suppressLogoff) {
 	this._clearChangelistUpdateTimer();
+	clearTimeout(this._logonTimeout); // cancel any queued reconnect attempt
+	clearTimeout(this._logonMsgTimeout);
 
 	if (this.steamID && !suppressLogoff) {
 		this._loggingOff = true;
@@ -342,9 +373,12 @@ SteamUser.prototype.relog = function() {
 // Handlers
 
 SteamUser.prototype._handlerManager.add(SteamUser.EMsg.ClientLogOnResponse, function(body) {
+	clearTimeout(this._logonMsgTimeout);
+	delete this._logonMsgTimeout;
+
 	switch (body.eresult) {
 		case EResult.OK:
-			delete this._logonTimeout; // success, so reset reconnect timer
+			delete this._logonTimeoutDuration; // success, so reset reconnect timer
 
 			this._logOnDetails.last_session_id = this._sessionID;
 			this._logOnDetails.client_instance_id = body.client_instance_id;
@@ -397,6 +431,15 @@ SteamUser.prototype._handlerManager.add(SteamUser.EMsg.ClientLogOnResponse, func
 				this.steamID = new SteamID(body.client_supplied_steamid);
 			}
 
+			if (!this.steamID) {
+				// This should never happen, but apparently sometimes it does
+				this._disconnect(true);
+				let err = new Error('BadResponse');
+				err.eresult = EResult.BadResponse;
+				this.emit('error', err);
+				return;
+			}
+
 			this.emit('loggedOn', body, parental);
 			this.emit('contentServersReady');
 
@@ -422,7 +465,7 @@ SteamUser.prototype._handlerManager.add(SteamUser.EMsg.ClientLogOnResponse, func
 		case EResult.AccountLoginDeniedNeedTwoFactor:
 		case EResult.TwoFactorCodeMismatch:
 			// server is up, so reset logon timer
-			delete this._logonTimeout;
+			delete this._logonTimeoutDuration;
 
 			this._disconnect(true);
 
@@ -441,19 +484,12 @@ SteamUser.prototype._handlerManager.add(SteamUser.EMsg.ClientLogOnResponse, func
 		case EResult.TryAnotherCM:
 			this.emit('debug', 'Log on response: ' + EResult[body.eresult]);
 			this._disconnect(true);
-
-			let timer = this._logonTimeout || 1000;
-			this._logonTimeout = Math.min(timer * 2, 60000); // exponential backoff, max 1 minute
-
-			setTimeout(() => {
-				this.logOn(true);
-			}, timer);
-
+			this._enqueueLogonAttempt();
 			break;
 
 		default:
 			// server is up, so reset logon timer
-			delete this._logonTimeout;
+			delete this._logonTimeoutDuration;
 
 			let error = new Error(EResult[body.eresult] || body.eresult);
 			error.eresult = body.eresult;
@@ -524,7 +560,7 @@ SteamUser.prototype._handleLogOff = function(result, msg) {
 
 		// if we're manually relogging, or we got disconnected because steam went down, enqueue a reconnect
 		if (!this._loggingOff || this._relogging) {
-			setTimeout(() => {
+			this._logonTimeout = setTimeout(() => {
 				this.logOn(true);
 			}, 1000);
 		}
